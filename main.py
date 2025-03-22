@@ -16,6 +16,8 @@ from run_SORT import run_SORT
 from run_UCMCTrack import run_UCMCTrack
 from run_DeepSORT import run_DeepSORT
 from PIL import Image
+from datetime import datetime, timedelta
+
 
 def set_random_seed(seed):
     torch.manual_seed(seed)
@@ -23,6 +25,7 @@ def set_random_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 def clear_folders_and_files():
     # 清空指定的文件夹内容
@@ -52,10 +55,10 @@ def clear_folders_and_files():
                     except Exception as e:
                         print(f"清空文件 {file_path} 内容时出错：{str(e)}")
 
+
 def parse_mot_result(mot_result_path):
     """
-    解析 MOT 结果文件，按 track_id 分组，返回字典：
-    { track_id: [(frame_id, l, t, w, h), ...], ... }
+    解析 MOT 结果文件，按 track_id 分组，返回字典：{ track_id: [(frame_id, l, t, w, h), ...], ... }
     """
     track_detections = {}
     with open(mot_result_path, "r") as f:
@@ -80,6 +83,7 @@ def parse_mot_result(mot_result_path):
         track_detections[tid].sort(key=lambda x: x[0])
     return track_detections
 
+
 def select_candidates(detections, num_candidates=5):
     """
     给定一个轨迹的所有检测，返回候选检测列表。
@@ -91,6 +95,7 @@ def select_candidates(detections, num_candidates=5):
     else:
         indices = np.linspace(0, N - 1, num_candidates, dtype=int)
         return [detections[i] for i in indices]
+
 
 def save_candidate_images(track_detections, seq_folder, candidate_root):
     """
@@ -130,6 +135,16 @@ def save_candidate_images(track_detections, seq_folder, candidate_root):
             candidate_filename = os.path.join(track_folder, f"candidate_{i + 1}.jpg")
             cv2.imwrite(candidate_filename, cropped_img)
             print(f"保存 track {track_id} 的候选图像到 {candidate_filename}")
+
+
+def calculate_time(start_time, frame_id, fps):
+    """
+    计算视频的时间，基于起始时间和帧率
+    """
+    start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+    frame_time_offset = frame_id / fps  # 每帧的时间偏移（秒）
+    frame_time = start_dt + timedelta(seconds=frame_time_offset)
+    return frame_time.strftime("%H:%M:%S")  # 只显示时:分:秒
 
 def extract_feature(image_path, model, transform, device):
     """
@@ -222,6 +237,57 @@ def re_id(best_res):
     for tid, sim in top5:
         print(f"track_id: {tid}, similarity: {sim:.4f}")
     return top5
+
+
+def visualize_trajectory(op,track_id, start_time, video_fps):
+    """
+    可视化轨迹，并显示时间
+    """
+    # 1. 加载背景图
+    background_img = cv2.imread("seq/000000.jpg")
+    if background_img is None:
+        print("无法加载背景图：seq/000000.jpg")
+        return
+
+    # 2. 解析 MOT 结果，得到轨迹数据
+    mot_result_path=op
+    # mot_result_path = f"output/{op}_mot_output.txt"  # 这个路径根据你的选择结果变化
+    track_detections = parse_mot_result(mot_result_path)
+
+    if track_id not in track_detections:
+        print(f"没有找到轨迹 {track_id} 的数据")
+        return
+
+    # 3. 获取用户选择的轨迹的检测数据
+    detections = track_detections[track_id]
+
+    # 4. 创建用于绘制的图像（背景图）
+    img = background_img.copy()
+
+    # 5. 绘制轨迹
+    prev_point = None
+    for i, (frame_id, l, t, w, h) in enumerate(detections):
+        # 计算时间
+        timestamp = calculate_time(start_time, frame_id, video_fps)
+
+        # 计算检测框中心点
+        center_x = int(l + w / 2)
+        center_y = int(t + h / 2)
+
+        # 绘制连线
+        if prev_point:
+            cv2.line(img, prev_point, (center_x, center_y), (0, 0, 255), 2)
+
+        # 每隔20个点打印时间
+        if i % 20 == 0:
+            cv2.putText(img, f"{timestamp}", (center_x, center_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        prev_point = (center_x, center_y)
+
+    # 6. 显示结果
+    cv2.imshow(f"轨迹 {track_id} 可视化", img)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 
 class TRSApp:
@@ -322,7 +388,7 @@ class TRSApp:
         if not self.video_path or not self.image_path or not self.start_time:
             messagebox.showerror("错误", "请确保视频、图像文件以及视频起始时间都已提供。")
             return
-        print("video_path",self.video_path)
+        print("video_path", self.video_path)
         # 打开视频文件，获取 FPS
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
@@ -462,7 +528,8 @@ class TRSApp:
                 messagebox.showwarning("警告", "请先选择一个轨迹！")
                 return
             messagebox.showinfo("选择结果", f"您选择的轨迹是：{chosen_track}")
-            # TODO: 后续实现显示该轨迹的功能，例如调用 self.display_trajectory(chosen_track)
+            print("best_res",best_res)
+            visualize_trajectory(best_res,int(chosen_track), self.start_time, self.video_fps)
             selection_window.destroy()
 
         confirm_btn = tk.Button(selection_window, text="确认选择", command=confirm_selection)
